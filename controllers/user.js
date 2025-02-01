@@ -1,13 +1,5 @@
-import User, { validateUser } from "../models/User.js";
-import validationErrorMessage from "../util/validationErrorMessage.js";
-import { logError } from "../util/logging.js";
+import User from "../models/User.js";
 import { EXPIRES_IN } from "../util/constants.js";
-
-import {
-  validateUser as customUserValidation,
-  validatePasswordLength,
-  validatePasswordStrength,
-} from "../util/validateUser.js";
 
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
@@ -62,10 +54,13 @@ export const login = async (req, res) => {
       email: credentials.email,
     });
 
+    const isMatchedPassword = await bcrypt.compare(
+      credentials.password,
+      user.password
+    );
     // after checking the username, check if the given password is correct
-    if (user && (await bcrypt.compare(credentials.password, user.password))) {
+    if (user && isMatchedPassword) {
       // if the user has provided correct credentials then generate a json web token for him
-
       // check if the user wants his session not to expire (remember me)
 
       let accessToken;
@@ -85,10 +80,9 @@ export const login = async (req, res) => {
 
       return res.status(200).json({
         id: user._id,
-        name: user.name,
+        userName: user.userName,
         email: user.email,
         userType: user.userType,
-        membership: user.membership,
         accessToken: accessToken,
       });
     } else {
@@ -112,6 +106,7 @@ export const login = async (req, res) => {
 export const createUser = async (req, res) => {
   try {
     const user = req.body;
+
     // if the user did not provide a right json object, it is a bad request
     if (typeof user !== "object") {
       res.status(400).json({
@@ -124,85 +119,60 @@ export const createUser = async (req, res) => {
       return;
     }
 
-    // check that all the fields the user provided are allowed,
-    // and all the required fields are present inside the user object
-    const errorList = validateUser(user);
+    // check if a user with the given username or email already exists
+    const userExistsEmail = await User.findOne({ email: user.email });
+    const userExistsUserName = await User.findOne({ userName: user.userName });
 
-    if (errorList.length > 0) {
-      return res
-        .status(400)
-        .json({ success: false, msg: validationErrorMessage(errorList) });
-    } else {
-      // check if a user with the given username already exists
-      const userExists = await User.findOne({ email: user.email });
-
-      // if yes then it is a bad request (code 400)
-      if (userExists) {
-        return res.status(400).json({
-          success: false,
-          message: `A user with the email address '${userExists.email}' already exists`,
-        });
-      }
-      // validate the password before hashing
-
-      const customErrors = customUserValidation(user);
-      if (Object.keys(customErrors).length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: "unable to create user",
-          errors: customErrors,
-        });
-      }
-
-      // hash the password
-      const salt = await bcrypt.genSalt();
-      const hashedPassword = await bcrypt.hash(user.password, salt);
-
-      // create a new user
-      const newUser = await User.create({
-        ...user,
-        password: hashedPassword,
+    // if yes then it is a bad request (code 400)
+    if (userExistsEmail) {
+      return res.status(400).json({
+        success: false,
+        message: `A user with the email address '${userExists.email}' already exists`,
       });
-      if (newUser) {
-        const accessToken = jwt.sign(
-          { id: newUser._id },
-          process.env.ACCESS_TOKEN_SECRET,
-          { expiresIn: EXPIRES_IN }
-        );
+    }
 
-        return res.status(201).json({
-          success: true,
-          id: newUser._id,
-          name: newUser.name,
-          email: newUser.email,
-          userType: newUser.userType,
-          membership: newUser.membership,
-          accessToken: accessToken,
-        });
-      } else {
-        // if an error occurred while creating a new user, something has to do with the server
-        return res
-          .status(500)
-          .json({ success: false, message: "Internal Server Error" });
-      }
+    if (userExistsUserName) {
+      return res.status(400).json({
+        success: false,
+        message: `A user with the user name '${userExistsUserName.userName}' already exists`,
+      });
+    }
+
+    // hash the password
+    const salt = await bcrypt.genSalt();
+    const hashedPassword = await bcrypt.hash(user.password, salt);
+
+    // create a new user
+    const newUser = await User.create({
+      ...user,
+      password: hashedPassword,
+    });
+
+    if (newUser) {
+      const accessToken = jwt.sign(
+        { id: newUser._id },
+        process.env.ACCESS_TOKEN_SECRET,
+        { expiresIn: EXPIRES_IN }
+      );
+
+      return res.status(201).json({
+        success: true,
+        id: newUser._id,
+        userName: newUser.userName,
+        email: newUser.email,
+        userType: newUser.userType,
+        accessToken: accessToken,
+      });
+    } else {
+      // if an error occurred while creating a new user, something has to do with the server
+      return res
+        .status(500)
+        .json({ success: false, message: "Internal Server Error" });
     }
   } catch (error) {
-    // Get all validation errors and send them along with the response
-    let errors = {};
-    for (let key in error.errors) {
-      errors[key] = error.errors[key].properties.message;
-    }
-
-    if (!validatePasswordLength(req.body.password)) {
-      errors.password =
-        "password is too short. Should be at least 8 characters";
-    } else if (!validatePasswordStrength(req.body.password)) {
-      errors.password = "password is too weak";
-    }
-
     return res
       .status(400)
-      .json({ success: false, message: "Unable to create user", errors });
+      .json({ success: false, message: "Unable to create user", error });
   }
 };
 
@@ -242,15 +212,9 @@ export const updateUser = async (req, res) => {
       success: true,
     });
   } catch (error) {
-    // Get all validation errors and send them along with the response
-    let errors = {};
-    for (let key in error.errors) {
-      errors[key] = error.errors[key].properties.message;
-    }
-
     return res
       .status(400)
-      .json({ success: false, msg: "Unable to create user", errors });
+      .json({ success: false, msg: "Unable to update user", error });
   }
 };
 
@@ -259,7 +223,6 @@ export const getUsers = async (req, res) => {
     const users = await User.find();
     res.status(200).json({ success: true, result: users });
   } catch (error) {
-    logError(error);
     res
       .status(500)
       .json({ success: false, msg: "Unable to get users, try again later" });
